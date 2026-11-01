@@ -47,26 +47,70 @@ if errorlevel 1 (
 )
 
 rem --- 2. Le reseau du laboratoire -----------------------------------
-rem Sous Windows : un "host-only adapter". Son nom est retenu dans
-rem .adaptateur pour que les relances ne creent pas de doublon.
+rem Sous Windows : un "host-only adapter". On ne lit JAMAIS le message de
+rem creation (il est traduit sur un Windows francais) : on compare la liste
+rem des adaptateurs avant et apres pour trouver le nouveau.
 echo.
 echo == Reseau du laboratoire 10.10.12.0/24
+
+rem Droits : hostonlyif create exige souvent une invite "administrateur".
+net session >nul 2>&1
+if errorlevel 1 (
+  echo    [!] Cette fenetre n'est PAS administrateur. Si la creation echoue,
+  echo        relancez par clic droit ^> "Executer en tant qu'administrateur".
+)
+
 set "ADAPT="
-if exist "%RACINE%.adaptateur" set /p ADAPT=<"%RACINE%.adaptateur"
-if defined ADAPT (
+
+rem 2a. Un adaptateur a-t-il deja l'adresse 10.10.12.1 ?
+call :chercher_adaptateur
+if defined ADAPT goto :adaptateur_pret
+
+rem 2b. Le nom retenu lors d'une execution precedente est-il encore valable ?
+if exist "%RACINE%.adaptateur" (
+  set /p ADAPT=<"%RACINE%.adaptateur"
   "%VBOX%" list hostonlyifs | findstr /c:"!ADAPT!" >nul || set "ADAPT="
 )
-if not defined ADAPT (
-  for /f "tokens=2 delims='" %%A in ('""%VBOX%" hostonlyif create 2^>^&1 ^| findstr /c:"was successfully created""') do set "ADAPT=%%A"
-  if not defined ADAPT (
-    echo ECHEC : creation de l'adaptateur host-only impossible.
-    echo         Dans VirtualBox : Outils ^> Reseau ^> Creer,
-    echo         puis adresse IPv4 10.10.12.1 / masque 255.255.255.0
-    pause & exit /b 1
-  )
-  > "%RACINE%.adaptateur" echo !ADAPT!
+if defined ADAPT goto :configurer_adaptateur
+
+rem 2c. Sinon on en cree un, et on le repere par difference de listes
+"%VBOX%" list hostonlyifs | findstr /b /c:"Name:" > "%TEMP%\hoif-avant.txt" 2>nul
+"%VBOX%" hostonlyif create >nul 2>&1
+"%VBOX%" list hostonlyifs | findstr /b /c:"Name:" > "%TEMP%\hoif-apres.txt" 2>nul
+for /f "usebackq tokens=1,* delims=:" %%A in (`findstr /v /l /g:"%TEMP%\hoif-avant.txt" "%TEMP%\hoif-apres.txt"`) do (
+  for /f "tokens=*" %%V in ("%%B") do set "ADAPT=%%V"
 )
+if not defined ADAPT (
+  rem Dernier recours : prendre le dernier adaptateur de la liste
+  for /f "usebackq tokens=1,* delims=:" %%A in (`""%VBOX%" list hostonlyifs ^| findstr /b /c:"Name:""`) do (
+    for /f "tokens=*" %%V in ("%%B") do set "ADAPT=%%V"
+  )
+)
+if not defined ADAPT (
+  echo.
+  echo ECHEC : aucun adaptateur host-only disponible.
+  echo.
+  echo    A faire une seule fois, dans VirtualBox :
+  echo       Fichier ^> Outils ^> Gestionnaire de reseau
+  echo       onglet "Reseaux hote uniquement" ^> Creer
+  echo       Adresse IPv4 : 10.10.12.1   Masque : 255.255.255.0
+  echo       Serveur DHCP : decoche
+  echo.
+  echo    Puis relancez ce fichier.
+  pause & exit /b 1
+)
+> "%RACINE%.adaptateur" echo !ADAPT!
+
+:configurer_adaptateur
 "%VBOX%" hostonlyif ipconfig "!ADAPT!" --ip 10.10.12.1 --netmask 255.255.255.0
+if errorlevel 1 (
+  echo.
+  echo ECHEC : impossible d'attribuer 10.10.12.1 a "!ADAPT!".
+  echo         Relancez cette fenetre en tant qu'administrateur.
+  pause & exit /b 1
+)
+
+:adaptateur_pret
 echo    adaptateur : !ADAPT!
 
 rem --- 3. Les quatre machines ----------------------------------------
@@ -122,7 +166,21 @@ echo.
 pause
 exit /b 0
 
-rem ===================== sous-programme ==============================
+rem ===================== sous-programmes =============================
+:chercher_adaptateur
+rem Parcourt "list hostonlyifs" et retient le nom de l'adaptateur dont
+rem l'adresse est deja 10.10.12.1. Insensible a la langue de Windows.
+set "ADAPT="
+set "NOMCOURANT="
+for /f "usebackq tokens=1,* delims=:" %%A in (`""%VBOX%" list hostonlyifs"`) do (
+  set "CLE=%%A"
+  set "VAL=%%B"
+  for /f "tokens=*" %%V in ("!VAL!") do set "VAL=%%V"
+  if /i "!CLE!"=="Name" set "NOMCOURANT=!VAL!"
+  if /i "!CLE!"=="IPAddress" if "!VAL!"=="10.10.12.1" set "ADAPT=!NOMCOURANT!"
+)
+goto :eof
+
 :machine
 set "NOM=%~1"
 set "IP=%~2"
